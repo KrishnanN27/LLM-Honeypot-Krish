@@ -1,8 +1,9 @@
 from ssh_server import start_ssh_server
 from llm import LLM
 
-MODEL_NAME = "../models/honeypot-llama3-8B"
-llama = LLM(MODEL_NAME)
-print(llama.answer('ls -al', ['mkdir test_directory; touch test.txt','\n']))
+MODEL_NAME = "NousResearch/Meta-Llama-3-8B-Instruct"
 
-start_ssh_server(llama)
+if __name__ == "__main__":
+    llama = LLM(MODEL_NAME)
+    print("Loaded LLM — starting SSH honeypot...")
+    start_ssh_server(llama)

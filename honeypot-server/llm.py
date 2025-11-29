@@ -24,7 +24,9 @@ class LLM:
             model=self.BASE_MODEL_NAME,
             tokenizer=self.BASE_MODEL_NAME,
             model_kwargs={"torch_dtype": torch.bfloat16},
-            device=self.DEVICE,
+            # device=self.DEVICE,
+            device=0 if torch.cuda.is_available() else -1
+
         )
 
         print("Loaded Model: ", self.BASE_MODEL_NAME)
@@ -52,7 +54,7 @@ class LLM:
             top_p=top_p,
         )
         response = outputs[0]["generated_text"][len(prompt):]
-        
+
         # remove unnecessary quotes
         if response.startswith("```") and response.endswith("```"):
             response = response[3:-3]
@@ -60,4 +62,3 @@ class LLM:
             response = response[1:-1]
 
         return response
-    

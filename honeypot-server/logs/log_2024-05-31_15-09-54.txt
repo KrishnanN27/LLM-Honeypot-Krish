@@ -3,8 +3,7 @@
 bin  desktop  documents  downloads  music  pictures  public  videos
 ```
 
-@CMD: 
+@CMD:
 @RESP: ```
 bash: command not found
 ```
-
