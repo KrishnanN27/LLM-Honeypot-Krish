@@ -1,66 +1,74 @@
+# llm.py
 import torch
 import gc
-import re
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    pipeline
-)
+from transformers import pipeline
 
 class LLM:
     def __init__(self, model_name="Qwen/Qwen2.5-1.5B-Instruct"):
         gc.collect()
         torch.cuda.empty_cache()
-        print("MODEL NAME =", model_name)
 
-        print("Cleared GPU...")
-
-        self.DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.DEVICE = 0 if torch.cuda.is_available() else -1
         self.BASE_MODEL_NAME = model_name
-        self.SYSTEM_PROMPT = "You are mimicking a linux server. Respond with what the terminal would respond when a code given. I want you to only reply with the terminal outputs inside one unique code block and nothing else. Do not write any explanations. Do not type any commands unless I instruct you to do so."
 
-        # Model configuration
         self.pipeline = pipeline(
             "text-generation",
-            model=self.BASE_MODEL_NAME,
-            tokenizer=self.BASE_MODEL_NAME,
+            model=model_name,
+            tokenizer=model_name,
             model_kwargs={"torch_dtype": torch.bfloat16},
-            # device=self.DEVICE,
-            device=0 if torch.cuda.is_available() else -1
-
+            device=self.DEVICE,
         )
 
-        print("Loaded Model: ", self.BASE_MODEL_NAME)
+        self.answer_cache = {}
 
-    def answer(self, query, log_history=[], max_tokens=4096, temperature=0.01, top_p=0.8):
+        self.SYSTEM_PROMPT = (
+            "You are mimicking a Linux terminal. Output only the terminal result, "
+            "no explanations, no backticks."
+        )
 
-        message_history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
-        if len(log_history) > 0:
-            for i, item in enumerate(log_history):
-                if i % 2 == 0:
-                    message_history.append({"role": "user", "content": item})
-                else:
-                    message_history.append({"role": "assistant", "content": item})
+    def answer(self, cmd, history):
+        if cmd in self.answer_cache:
+            return self.answer_cache[cmd]
 
-        user_prompt = message_history + [{"role": "user", "content": query}]
+        user_prompt = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        for i, item in enumerate(history[-6:]):
+            role = "user" if i % 2 == 0 else "assistant"
+            user_prompt.append({"role": role, "content": item})
+        user_prompt.append({"role": "user", "content": cmd})
+
         prompt = self.pipeline.tokenizer.apply_chat_template(
             user_prompt, tokenize=False, add_generation_prompt=True
         )
-        outputs = self.pipeline(
+
+        out = self.pipeline(
             prompt,
-            max_new_tokens=max_tokens,
+            max_new_tokens=128,
+            temperature=0.0,
+            top_p=0.9,
             eos_token_id=self.pipeline.tokenizer.eos_token_id,
-            do_sample=True,
-            temperature=temperature,
-            top_p=top_p,
+        )[0]["generated_text"][len(prompt):]
+
+        out = out.strip().replace("```", "")
+        self.answer_cache[cmd] = out
+        return out
+
+    def profile(self, cmd):
+        prompt = (
+            "Analyze this SSH command and output STRICT JSON ONLY:\n\n"
+            f"{cmd}\n\n"
+            "Fields: attacker_intent, sophistication_level, risk_score, explanation."
         )
-        response = outputs[0]["generated_text"][len(prompt):]
 
-        # remove unnecessary quotes
-        if response.startswith("```") and response.endswith("```"):
-            response = response[3:-3]
-        elif response.startswith("`") and response.endswith("`"):
-            response = response[1:-1]
+        out = self.pipeline(
+            prompt,
+            max_new_tokens=64,
+            temperature=0.0,
+            do_sample=False,
+            eos_token_id=self.pipeline.tokenizer.eos_token_id,
+        )[0]["generated_text"]
 
-        return response
+        start, end = out.find("{"), out.rfind("}")
+        if start != -1 and end != -1:
+            return out[start:end+1]
+
+        return '{"intent":"unknown","score":0}'

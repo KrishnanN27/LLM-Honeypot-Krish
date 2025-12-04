@@ -1,220 +1,154 @@
-import socket, sys, threading
+# server.py
+import socket, sys, threading, json
 import paramiko
 from datetime import datetime
+from fake_fs import handle_builtin
+from llm import LLM
 
-# ------------------------ Fake Filesystem ------------------------
-FAKE_FS = {
-    "/": ["home", "etc", "var", "bin", "usr"],
-    "/home": ["user"],
-    "/home/user": ["Desktop", "Downloads", "Documents"],
-    "/etc": ["passwd", "shadow", "hosts", "os-release"],
-    "/var": ["log"],
-    "/var/log": ["auth.log", "syslog"],
-}
-
-# Global working directory per-session (simple version)
-CURRENT_DIR = "/home/user"
-# -----------------------------------------------------------------
-
-def resolve_path(cwd, path):
-    if path.startswith("/"):
-        return path
-    if path == "..":
-        parent = "/".join(cwd.rstrip("/").split("/")[:-1])
-        return parent if parent else "/"
-    if path == ".":
-        return cwd
-    if cwd == "/":
-        return f"/{path}"
-    return f"{cwd}/{path}"
-
-def handle_builtin(cmd, cwd):
-    parts = cmd.strip().split()
-
-    if not parts:
-        return cwd, ""
-
-    # pwd
-    if parts[0] == "pwd":
-        return cwd, cwd
-    
-    if parts[0] == "ps":
-        return cwd, (
-            "USER   PID  %CPU %MEM VSZ   RSS TTY   STAT START   TIME COMMAND\n"
-            "root     1   0.0  0.1  1712  532 ?     Ss   10:00   0:00 /sbin/init\n"
-            "root   543   0.0  0.3  2148  789 ?     Ss   10:01   0:00 /usr/sbin/sshd\n"
-            "user  1221   0.1  1.0  5123  2345 pts/0 S+   10:02   0:00 bash\n"
-        )
-
-
-    # ls
-    if parts[0] == "ls":
-        target = cwd if len(parts) == 1 else resolve_path(cwd, parts[1])
-        if target in FAKE_FS:
-            return cwd, "  ".join(FAKE_FS[target])
-        return cwd, f"ls: cannot access '{target}': No such file or directory"
-
-    # cd
-    if parts[0] == "cd":
-        target = cwd if len(parts) == 1 else resolve_path(cwd, parts[0])
-        if len(parts) > 1:
-            target = resolve_path(cwd, parts[1])
-        else:
-            target = "/home/user"
-        if target in FAKE_FS:
-            return target, ""
-        return cwd, f"cd: no such file or directory: {target}"
-
-    # cat
-    if parts[0] == "cat":
-        if len(parts) < 2:
-            return cwd, "cat: missing filename"
-        target = resolve_path(cwd, parts[1])
-
-        if target == "/etc/passwd":
-            return cwd, (
-                "root:x:0:0:root:/root:/bin/bash\n"
-                "user:x:1000:1000:User:/home/user:/bin/bash"
-            )
-
-        if target == "/etc/os-release":
-            return cwd, (
-                'NAME="Ubuntu"\n'
-                'VERSION="22.04 LTS"\n'
-                'PRETTY_NAME="Ubuntu 22.04.4 LTS"\n'
-            )
-
-        return cwd, f"cat: {target}: No such file"
-
-    return cwd, None
-
-
-
-# ------------------------- SSH Server Core -------------------------
-
-# Generate keys with 'ssh-keygen -t rsa -f server.key'
 HOST_KEY = paramiko.RSAKey(filename='server.key')
 SSH_PORT = 2222
 
-# Log the user:password combinations to files
-LOGFILE = 'logs/auth.log'
-LOGFILE_LOCK = threading.Lock()
+LOG_LOCK = threading.Lock()
+
+# ------------------------------------------------
+# Async JSON log writer
+# ------------------------------------------------
+def async_log(logfile, log_dict):
+    def _write():
+        line = json.dumps(log_dict) + "\n"
+        with LOG_LOCK:
+            with open(logfile, "a") as f:
+                f.write(line)
+    threading.Thread(target=_write, daemon=True).start()
 
 
+# ------------------------------------------------
+# SSH Session Handler
+# ------------------------------------------------
 class SSHServerHandler(paramiko.ServerInterface):
-    def __init__(self, llm_model):
+    def __init__(self, model):
         self.event = threading.Event()
-        self.llm_model = llm_model
-        self.log_history = []
-        self.cwd = "/home/user"   # Session working directory
+        self.llm = model
+        self.cwd = "/home/user"
+        self.history = []
 
-    def check_channel_request(self, kind, channelID):
+    def get_allowed_auths(self, username): 
+        return "password"
+
+    def check_auth_password(self, user, pwd):
+        with LOG_LOCK:
+            with open("logs/auth.log", "a") as f:
+                f.write(f"{user}:{pwd}\n")
+        self.username = user
+        return paramiko.AUTH_SUCCESSFUL
+
+    def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
     def check_channel_shell_request(self, channel):
-        print("Channel", channel)
         self.channel = channel
         return True
 
-    def check_channel_pty_request(self, c, t, w, h, p, ph, m):
+    def check_channel_pty_request(self, *a):
         return True
 
-    def get_allowed_auths(self, username):
-        return 'password'
+    # ------------------------------------------------
+    # Async profiling (NEVER shown to attacker)
+    # ------------------------------------------------
+    def async_profile(self, cmd, logfile):
+        def _run():
+            profile = self.llm.profile(cmd)
+            async_log(logfile, {
+                "ts": datetime.now().isoformat(),
+                "cmd": cmd,
+                "profile": profile
+            })
+        threading.Thread(target=_run, daemon=True).start()
 
-    def check_auth_password(self, username, password):
-        self.username = username
-
-        LOGFILE_LOCK.acquire()
-        try:
-            logfile_handle = open(LOGFILE, "a")
-            print("New login: " + username + ":" + password)
-            logfile_handle.write(username + ":" + password + "\n")
-            logfile_handle.close()
-        finally:
-            LOGFILE_LOCK.release()
-
-        return paramiko.AUTH_SUCCESSFUL
-
+    # ------------------------------------------------
+    # MAIN SHELL LOOP (clean + fast)
+    # ------------------------------------------------
     def handle_shell(self):
-        log_filename = f"logs/log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+        logfile = f"logs/log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
 
-        while not self.channel.exit_status_ready():
+        while True:
             try:
-                # Show real prompt with cwd
-                self.channel.sendall(f'{self.username}@localhost:{self.cwd} $ ')
-                command = self.channel.recv(1024).decode("utf-8").strip()
+                # prompt
+                self.channel.sendall(f"{self.username}@honeypot:{self.cwd}$ ")
 
-                if not command:
+                raw = self.channel.recv(1024)
+                if not raw:
                     continue
 
-                print("CMD:", command)
+                cmd = raw.decode().strip()
+                if not cmd:
+                    continue
 
-                # 1) Builtin command check
-                new_dir, builtin_output = handle_builtin(command, self.cwd)
+                # attempt builtin
+                new_dir, out = handle_builtin(cmd, self.cwd)
 
-                if builtin_output is not None:
+                if out is not None:
                     self.cwd = new_dir
-                    self.channel.sendall(builtin_output + "\n")
+                    self.channel.sendall(out + "\n")
+
+                    async_log(logfile, {
+                        "ts": datetime.now().isoformat(),
+                        "cmd": cmd,
+                        "resp": out
+                    })
+                    self.async_profile(cmd, logfile)
                     continue
 
-                # 2) Fall back to LLM for unknown commands
-                response = self.llm_model.answer(command, self.log_history)
+                # LLM fallback
+                resp = self.llm.answer(cmd, self.history)
+                self.history.extend([cmd, resp])
 
-                # Save logs
-                self.log_history.append(command)
-                self.log_history.append(response)
+                self.channel.sendall(resp + "\n")
 
-                with open(log_filename, "a") as log_file:
-                    log_file.write(f"@CMD: {command}\n@RESP: {response}\n\n")
-
-                self.channel.sendall(f"{response}\n")
+                async_log(logfile, {
+                    "ts": datetime.now().isoformat(),
+                    "cmd": cmd,
+                    "resp": resp
+                })
+                self.async_profile(cmd, logfile)
 
             except Exception as e:
-                print("Channel closed:", e)
-                self.channel.close()
-                self.event.set()
-                return
+                print("Shell closed:", e)
+                break
 
         self.channel.close()
         self.event.set()
 
 
-def handleConnection(client, llm_model):
+# ------------------------------------------------
+# Start Server
+# ------------------------------------------------
+def start_ssh_server():
+    model = LLM()
+
+    server_socket = socket.socket()
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(('', SSH_PORT))
+    server_socket.listen(100)
+
+    print(f"SSH Honeypot running on port {SSH_PORT}...")
+
+    while True:
+        client, addr = server_socket.accept()
+        print("Connection:", addr)
+        threading.Thread(
+            target=handle_client,
+            args=(client, model),
+            daemon=True
+        ).start()
+
+
+def handle_client(client, model):
     transport = paramiko.Transport(client)
     transport.add_server_key(HOST_KEY)
-
-    server_handler = SSHServerHandler(llm_model)
-    transport.start_server(server=server_handler)
-
-    channel = transport.accept()
-
-    if channel is None:
-        transport.close()
-        return
-
-    server_handler.channel = channel
-    server_handler.handle_shell()
-
-
-def start_ssh_server(llm_model):
-    try:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind(('', SSH_PORT))
-        server_socket.listen(100)
-        print('Server started...')
-
-        while True:
-            try:
-                client_socket, client_addr = server_socket.accept()
-                print(f'New Connection: {client_addr}')
-                threading.Thread(target=handleConnection, args=(client_socket, llm_model)).start()
-            except Exception as e:
-                print("ERROR: Client handling")
-                print(e)
-
-    except Exception as e:
-        print("ERROR: Failed to create socket")
-        print(e)
-        sys.exit(1)
+    handler = SSHServerHandler(model)
+    transport.start_server(server=handler)
+    chan = transport.accept()
+    if chan:
+        handler.channel = chan
+        handler.handle_shell()
