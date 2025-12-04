@@ -34,6 +34,8 @@ class SSHServerHandler(paramiko.ServerInterface):
         self.history = []
         self.session_id = str(uuid.uuid4())[:8]   # short readable session
         self.ip = None
+        self.last_ts = None
+
 
 
     def get_allowed_auths(self, username): 
@@ -69,14 +71,26 @@ class SSHServerHandler(paramiko.ServerInterface):
             except:
                 profile = {"raw": profile_str}
 
+            now = datetime.now()
+
+            # Compute delta_ms if not first command
+            if self.last_ts is None:
+                delta_ms = 0
+            else:
+                delta_ms = (now - self.last_ts).total_seconds() * 1000
+
+            self.last_ts = now
+
             record = {
-                "ts": datetime.now().isoformat(),
+                "ts": now.isoformat(),
+                "delta_ms": delta_ms,
                 "session": self.session_id,
                 "ip": self.ip,
                 "cmd": cmd,
                 "resp": resp,
                 "profile": profile
             }
+
 
             async_log(logfile, record)
 
