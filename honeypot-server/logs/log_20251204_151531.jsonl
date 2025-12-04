@@ -1,0 +1,3 @@
+{"ts": "2025-12-04T15:16:30.579454", "session": "60b1dc31", "ip": "127.0.0.1", "cmd": "pwd", "resp": "/home/user", "profile": {"attacker_intent": "", "sophistication_level": "", "risk_score": "", "explanation": ""}}
+{"ts": "2025-12-04T15:16:33.912915", "session": "60b1dc31", "ip": "127.0.0.1", "cmd": "ls", "resp": "Desktop  Downloads  Documents", "profile": {"attacker_intent": "", "sophistication_level": "", "risk_score": "", "explanation": ""}}
+{"ts": "2025-12-04T15:16:35.777361", "session": "60b1dc31", "ip": "127.0.0.1", "cmd": "cat /etc/passwd", "resp": "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000:User:/home/user:/bin/bash", "profile": {"attacker_intent": "", "sophistication_level": "", "risk_score": "", "explanation": ""}}

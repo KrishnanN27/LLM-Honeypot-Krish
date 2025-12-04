@@ -4,6 +4,7 @@ import paramiko
 from datetime import datetime
 from fake_fs import handle_builtin
 from llm import LLM
+import uuid
 
 HOST_KEY = paramiko.RSAKey(filename='server.key')
 SSH_PORT = 2222
@@ -31,6 +32,9 @@ class SSHServerHandler(paramiko.ServerInterface):
         self.llm = model
         self.cwd = "/home/user"
         self.history = []
+        self.session_id = str(uuid.uuid4())[:8]   # short readable session
+        self.ip = None
+
 
     def get_allowed_auths(self, username): 
         return "password"
@@ -57,10 +61,18 @@ class SSHServerHandler(paramiko.ServerInterface):
     # ------------------------------------------------
     def async_profile(self, cmd, resp, logfile):
         def _run():
-            profile = self.llm.profile(cmd)
+            profile_str = self.llm.profile(cmd)
+
+            # Try to decode profile JSON
+            try:
+                profile = json.loads(profile_str)
+            except:
+                profile = {"raw": profile_str}
 
             record = {
                 "ts": datetime.now().isoformat(),
+                "session": self.session_id,
+                "ip": self.ip,
                 "cmd": cmd,
                 "resp": resp,
                 "profile": profile
@@ -69,6 +81,7 @@ class SSHServerHandler(paramiko.ServerInterface):
             async_log(logfile, record)
 
         threading.Thread(target=_run, daemon=True).start()
+
 
 
     # ------------------------------------------------
@@ -143,6 +156,8 @@ def handle_client(client, model):
     transport = paramiko.Transport(client)
     transport.add_server_key(HOST_KEY)
     handler = SSHServerHandler(model)
+    handler.ip = client.getpeername()[0]
+
     transport.start_server(server=handler)
     chan = transport.accept()
     if chan:
