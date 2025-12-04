@@ -1,3 +1,0 @@
-{"ts": "2025-12-04T14:55:50.105587", "cmd": "pwd", "resp": "/home/user"}
-{"ts": "2025-12-04T14:55:51.920250", "cmd": "ls", "resp": "Desktop  Downloads  Documents"}
-{"ts": "2025-12-04T14:55:56.360706", "cmd": "cd Desktop", "resp": "cd: no such file or directory: /home/user/Desktop"}

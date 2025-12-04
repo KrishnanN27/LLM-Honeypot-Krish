@@ -55,15 +55,21 @@ class SSHServerHandler(paramiko.ServerInterface):
     # ------------------------------------------------
     # Async profiling (NEVER shown to attacker)
     # ------------------------------------------------
-    def async_profile(self, cmd, logfile):
+    def async_profile(self, cmd, resp, logfile):
         def _run():
             profile = self.llm.profile(cmd)
-            async_log(logfile, {
+
+            record = {
                 "ts": datetime.now().isoformat(),
                 "cmd": cmd,
+                "resp": resp,
                 "profile": profile
-            })
+            }
+
+            async_log(logfile, record)
+
         threading.Thread(target=_run, daemon=True).start()
+
 
     # ------------------------------------------------
     # MAIN SHELL LOOP (clean + fast)
@@ -73,7 +79,6 @@ class SSHServerHandler(paramiko.ServerInterface):
 
         while True:
             try:
-                # prompt
                 self.channel.sendall(f"{self.username}@honeypot:{self.cwd}$ ")
 
                 raw = self.channel.recv(1024)
@@ -91,12 +96,8 @@ class SSHServerHandler(paramiko.ServerInterface):
                     self.cwd = new_dir
                     self.channel.sendall(out + "\n")
 
-                    async_log(logfile, {
-                        "ts": datetime.now().isoformat(),
-                        "cmd": cmd,
-                        "resp": out
-                    })
-                    self.async_profile(cmd, logfile)
+                    # ---- unified logging ----
+                    self.async_profile(cmd, out, logfile)
                     continue
 
                 # LLM fallback
@@ -105,12 +106,8 @@ class SSHServerHandler(paramiko.ServerInterface):
 
                 self.channel.sendall(resp + "\n")
 
-                async_log(logfile, {
-                    "ts": datetime.now().isoformat(),
-                    "cmd": cmd,
-                    "resp": resp
-                })
-                self.async_profile(cmd, logfile)
+                # ---- unified logging ----
+                self.async_profile(cmd, resp, logfile)
 
             except Exception as e:
                 print("Shell closed:", e)
@@ -118,7 +115,6 @@ class SSHServerHandler(paramiko.ServerInterface):
 
         self.channel.close()
         self.event.set()
-
 
 # ------------------------------------------------
 # Start Server
