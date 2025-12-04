@@ -9,9 +9,11 @@ from transformers import (
 )
 
 class LLM:
-    def __init__(self, model_name="NousResearch/Meta-Llama-3-8B-Instruct"):
+    def __init__(self, model_name="Qwen/Qwen2.5-1.5B-Instruct"):
         gc.collect()
         torch.cuda.empty_cache()
+        print("MODEL NAME =", model_name)
+
         print("Cleared GPU...")
 
         self.DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"

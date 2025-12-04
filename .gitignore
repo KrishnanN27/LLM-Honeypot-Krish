@@ -2,10 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+honeypot-server/logs/log_2025-12-04_13-10-51.txt
+justforreferencedontbother/
 # C extensions
 *.so
-
+honeypot_env/*
 # Distribution / packaging
 .Python
 build/
